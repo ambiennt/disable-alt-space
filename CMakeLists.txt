@@ -42,5 +42,5 @@ target_compile_options(${TARGET_NAME} PRIVATE
 	/clang:-Wall
 	/clang:-Wextra
 	$<$<CONFIG:Debug>:/Zi; /Ob0; /clang:-O0>
-	$<$<CONFIG:Release>:/Ob3; /GS-; /sdl-; /guard:cf-; /clang:-O3; /clang:-flto=thin; /clang:-fwhole-program-vtables; /clang:-fno-rtti; /clang:-fno-stack-protector>
+	$<$<CONFIG:Release>:/Ob3; /GS-; /sdl-; /guard:cf-; /clang:-O3; /clang:-flto=thin; /clang:-fwhole-program-vtables; /clang:-fno-rtti>
 )
