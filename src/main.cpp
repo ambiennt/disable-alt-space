@@ -61,7 +61,7 @@ namespace das {
 	template<size_t N>
 	bool send_inputs(std::array<INPUT, N>& inputs) {
 		constexpr UINT num_expected_inputs{ N };
-		return SendInput(static_cast<UINT>(N), inputs.data(), sizeof(INPUT)) == num_expected_inputs;
+		return SendInput(UINT{ N }, inputs.data(), sizeof(INPUT)) == num_expected_inputs;
 	}
 
 	bool send_alt_up_then_space_down() {
