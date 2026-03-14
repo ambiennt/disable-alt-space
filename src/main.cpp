@@ -48,12 +48,12 @@ namespace das {
 		return static_cast<WORD>(MapVirtualKeyW(VK_SPACE, MAPVK_VK_TO_VSC));
 	}
 
-	INPUT make_key_input(const WORD scan, const DWORD flags = 0) {
+	INPUT make_key_input(const WORD scan, const DWORD addl_flags = 0) {
 		INPUT in{};
 		in.type = INPUT_KEYBOARD;
 		in.ki.wVk = 0;
 		in.ki.wScan = scan;
-		in.ki.dwFlags = KEYEVENTF_SCANCODE | flags;
+		in.ki.dwFlags = KEYEVENTF_SCANCODE | addl_flags;
 		in.ki.dwExtraInfo = g_injected_tag;
 		return in;
 	}
@@ -147,7 +147,7 @@ namespace das {
 					return 1;
 				}
 
-				const bool alt_active = g_alt_physical_down || ((info->flags & LLKHF_ALTDOWN) != 0);
+				const auto alt_active = g_alt_physical_down || ((info->flags & LLKHF_ALTDOWN) != 0);
 
 				// If alt is active, swallow the real space-down and translate it into: synthetic alt-up, then synthetic space-down.
 				if (alt_active) {
