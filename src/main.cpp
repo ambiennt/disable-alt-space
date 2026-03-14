@@ -107,7 +107,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[], [[maybe_unuse
 	while ((ret = GetMessageW(&msg, nullptr, 0, 0)) != 0) {
 		constexpr BOOL err = -1;
 		if (ret == err) {
-			das::print_last_error("das::unhook_keyboard_callback");
+			das::print_last_error("GetMessageW");
 			return 1;
 		}
 		else {
