@@ -5,12 +5,27 @@
 #include <system_error>
 #include <string>
 #include <string_view>
+#include <array>
+#include <cstdint>
 
 namespace das {
 
 	HHOOK g_keyboard_hook{ nullptr };
-	bool g_alt_down = false;
-	bool g_space_down = false;
+
+	// Physical state from real, non-injected key events.
+	bool g_alt_physical_down = false;
+	bool g_space_physical_down = false;
+
+	// The current space press is being forwarded synthetically as a non-alt-modified space press.
+	bool g_forwarding_plain_space = false;
+
+	// We synthesized an alt-up for the current translated space press, so swallow the user's later real alt-up.
+	bool g_swallow_next_alt_up = false;
+
+	WORD g_alt_scan = 0;
+	bool g_alt_extended = false;
+
+	constexpr ULONG_PTR k_injected_tag = 0x1234ABCDull;
 
 	std::string error_code_to_string(const DWORD errc) {
 		return std::system_category().message(errc);
@@ -25,45 +40,137 @@ namespace das {
 		return (vk == VK_MENU) || (vk == VK_LMENU) || (vk == VK_RMENU);
 	}
 
+	bool is_our_injected_event(const KBDLLHOOKSTRUCT& info) {
+		return ((info.flags & LLKHF_INJECTED) != 0) && (info.dwExtraInfo == k_injected_tag);
+	}
+
+	WORD space_scan_code() {
+		return static_cast<WORD>(MapVirtualKeyW(VK_SPACE, MAPVK_VK_TO_VSC));
+	}
+
+	INPUT make_key_input(const WORD scan, const DWORD flags = 0) {
+		INPUT in{};
+		in.type = INPUT_KEYBOARD;
+		in.ki.wVk = 0;
+		in.ki.wScan = scan;
+		in.ki.dwFlags = KEYEVENTF_SCANCODE | flags;
+		in.ki.dwExtraInfo = k_injected_tag;
+		return in;
+	}
+
+	template<size_t N>
+	bool send_inputs(std::array<INPUT, N>& inputs) {
+		return SendInput(static_cast<UINT>(N), inputs.data(), sizeof(INPUT)) == N;
+	}
+
+	bool send_alt_up_then_space_down() {
+		DWORD alt_flags = KEYEVENTF_KEYUP;
+		if (g_alt_extended) {
+			alt_flags |= KEYEVENTF_EXTENDEDKEY;
+		}
+
+		std::array inputs{
+			make_key_input(g_alt_scan, alt_flags),
+			make_key_input(space_scan_code()),
+		};
+		return send_inputs(inputs);
+	}
+
+	bool send_space_down() {
+		std::array inputs{
+			make_key_input(space_scan_code()),
+		};
+		return send_inputs(inputs);
+	}
+
+	bool send_space_up() {
+		std::array inputs{
+			make_key_input(space_scan_code(), KEYEVENTF_KEYUP),
+		};
+		return send_inputs(inputs);
+	}
+
 	LRESULT CALLBACK detour_keyboard_callback(int nCode, WPARAM wParam, LPARAM lParam) {
-		if (nCode == HC_ACTION) {
-			const auto* const info = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+		if (nCode != HC_ACTION) {
+			return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
+		}
 
-			const auto down = (wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN);
-			const auto up = (wParam == WM_KEYUP) || (wParam == WM_SYSKEYUP);
-			const auto alt = is_alt_key(info->vkCode);
-			const auto space = info->vkCode == VK_SPACE;
+		const auto* info = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
 
-			if (alt) {
-				if (down) {
-					g_alt_down = true;
+		// Ignore only the synthetic key events injected by this process.
+		if (is_our_injected_event(*info)) {
+			return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
+		}
 
-					// Space was already down, so block space then alt.
-					if (g_space_down) {
-						return 1;
-					}
-				}
-				else if (up) {
-					g_alt_down = false;
-				}
-			}
-			else if (space) {
-				if (down) {
-					g_space_down = true;
+		const bool down = (wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN);
+		const bool up = (wParam == WM_KEYUP) || (wParam == WM_SYSKEYUP);
+		const bool alt = is_alt_key(info->vkCode);
+		const bool space = info->vkCode == VK_SPACE;
 
-					// Alt was already down, so block alt then space.
-					if (g_alt_down) {
-						return 1;
-					}
-				}
-				else if (up) {
-					g_space_down = false;
+		if (alt) {
+			if (down) {
+				g_alt_physical_down = true;
+				g_alt_scan = static_cast<WORD>(info->scanCode);
+				g_alt_extended = (info->flags & LLKHF_EXTENDED) != 0;
+
+				// If space is currently held, swallow the real alt-down.
+				if (g_space_physical_down) {
+					return 1;
 				}
 			}
+			else if (up) {
+				g_alt_physical_down = false;
 
-			// While both are held, swallow repeated events for either key.
-			if ((alt || space) && g_alt_down && g_space_down) {
-				return 1;
+				// If we already synthesized alt-up for the current translated space press, swallow the matching real alt-up.
+				if (g_swallow_next_alt_up) {
+					g_swallow_next_alt_up = false;
+					return 1;
+				}
+
+				// If space is currently held, also swallow the real alt-up.
+				if (g_space_physical_down) {
+					return 1;
+				}
+			}
+		}
+
+		if (space) {
+			if (down) {
+				g_space_physical_down = true;
+
+				// While forwarding synthetic non-alt-modified space input, swallow the real space-down repeat and synthesize space-down instead.
+				if (g_forwarding_plain_space) {
+					if (!send_space_down()) {
+						print_last_error("das::send_space_down");
+					}
+					return 1;
+				}
+
+				const bool alt_active = g_alt_physical_down || ((info->flags & LLKHF_ALTDOWN) != 0);
+
+				// If alt is active, swallow the real space-down and translate it into: synthetic alt-up, then synthetic space-down.
+				if (alt_active) {
+					if (!send_alt_up_then_space_down()) {
+						print_last_error("das::send_alt_up_then_space_down");
+						return 1;
+					}
+					g_forwarding_plain_space = true;
+					g_swallow_next_alt_up = true;
+					return 1;
+				}
+			}
+			else if (up) {
+				g_space_physical_down = false;
+
+				// If the current space press is being forwarded synthetically,
+				// swallow the real space-up and synthesize space-up instead.
+				if (g_forwarding_plain_space) {
+					if (!send_space_up()) {
+						print_last_error("das::send_space_up");
+					}
+					g_forwarding_plain_space = false;
+					return 1;
+				}
 			}
 		}
 
@@ -73,13 +180,7 @@ namespace das {
 	bool hook_keyboard_callback() {
 		const auto inst = reinterpret_cast<HINSTANCE>(GetModuleHandleW(nullptr));
 		constexpr DWORD all_threads_id = 0;
-
-		g_keyboard_hook = SetWindowsHookExW(
-			WH_KEYBOARD_LL,
-			detour_keyboard_callback,
-			inst,
-			all_threads_id);
-
+		g_keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, &detour_keyboard_callback, inst, all_threads_id);
 		return g_keyboard_hook != nullptr;
 	}
 
