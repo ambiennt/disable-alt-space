@@ -25,7 +25,7 @@ namespace das {
 	WORD g_alt_scan = 0;
 	bool g_alt_extended = false;
 
-	constexpr ULONG_PTR k_injected_tag = 0x1234ABCDull;
+	constexpr ULONG_PTR g_injected_tag = 0x1234ABCDull;
 
 	std::string error_code_to_string(const DWORD errc) {
 		return std::system_category().message(errc);
@@ -41,7 +41,7 @@ namespace das {
 	}
 
 	bool is_our_injected_event(const KBDLLHOOKSTRUCT& info) {
-		return ((info.flags & LLKHF_INJECTED) != 0) && (info.dwExtraInfo == k_injected_tag);
+		return ((info.flags & LLKHF_INJECTED) != 0) && (info.dwExtraInfo == g_injected_tag);
 	}
 
 	WORD space_scan_code() {
@@ -54,13 +54,14 @@ namespace das {
 		in.ki.wVk = 0;
 		in.ki.wScan = scan;
 		in.ki.dwFlags = KEYEVENTF_SCANCODE | flags;
-		in.ki.dwExtraInfo = k_injected_tag;
+		in.ki.dwExtraInfo = g_injected_tag;
 		return in;
 	}
 
 	template<size_t N>
 	bool send_inputs(std::array<INPUT, N>& inputs) {
-		return SendInput(static_cast<UINT>(N), inputs.data(), sizeof(INPUT)) == N;
+		constexpr UINT num_expected_inputs{ N };
+		return SendInput(static_cast<UINT>(N), inputs.data(), sizeof(INPUT)) == num_expected_inputs;
 	}
 
 	bool send_alt_up_then_space_down() {
@@ -102,10 +103,10 @@ namespace das {
 			return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
 		}
 
-		const bool down = (wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN);
-		const bool up = (wParam == WM_KEYUP) || (wParam == WM_SYSKEYUP);
-		const bool alt = is_alt_key(info->vkCode);
-		const bool space = info->vkCode == VK_SPACE;
+		const auto down = (wParam == WM_KEYDOWN) || (wParam == WM_SYSKEYDOWN);
+		const auto up = (wParam == WM_KEYUP) || (wParam == WM_SYSKEYUP);
+		const auto alt = is_alt_key(info->vkCode);
+		const auto space = info->vkCode == VK_SPACE;
 
 		if (alt) {
 			if (down) {
@@ -162,8 +163,7 @@ namespace das {
 			else if (up) {
 				g_space_physical_down = false;
 
-				// If the current space press is being forwarded synthetically,
-				// swallow the real space-up and synthesize space-up instead.
+				// If the current space press is being forwarded synthetically, swallow the real space-up and synthesize space-up instead.
 				if (g_forwarding_plain_space) {
 					if (!send_space_up()) {
 						print_last_error("das::send_space_up");
